@@ -1,0 +1,239 @@
+\documentclass{article}
+
+\usepackage[letterpaper, landscape, margin=0.25in]{geometry}
+
+\begin{document}
+
+\title{Flu Reporting Backfill Exploration}
+
+<<Setup>>=
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(grid)
+
+library(MMWRweek)
+library(cdcfluview)
+
+get_legend_grob <- function(x) {
+  data <- ggplot2:::ggplot_build(x)
+
+  plot <- data$plot
+  panel <- data$panel
+  data <- data$data
+  theme <- ggplot2:::plot_theme(plot)
+  position <- theme$legend.position
+  if (length(position) == 2) {
+    position <- "manual"
+  }
+
+  legend_box <- if (position != "none") {
+    ggplot2:::build_guides(plot$scales, plot$layers, plot$mapping,
+      position, theme, plot$guides, plot$labels)
+  } else {
+    ggplot2:::zeroGrob()
+  }
+  if (ggplot2:::is.zero(legend_box)) {
+    position <- "none"
+  }
+  else {
+    legend_width <- gtable:::gtable_width(legend_box) + theme$legend.margin
+    legend_height <- gtable:::gtable_height(legend_box) + theme$legend.margin
+    just <- valid.just(theme$legend.justification)
+    xjust <- just[1]
+    yjust <- just[2]
+    if (position == "manual") {
+      xpos <- theme$legend.position[1]
+      ypos <- theme$legend.position[2]
+      legend_box <- editGrob(legend_box, vp = viewport(x = xpos,
+        y = ypos, just = c(xjust, yjust), height = legend_height,
+        width = legend_width))
+    }
+    else {
+      legend_box <- editGrob(legend_box, vp = viewport(x = xjust,
+        y = yjust, just = c(xjust, yjust)))
+    }
+  }
+  return(legend_box)
+}
+@
+
+<<LoadFluData>>=
+flu <- readRDS("data/flu_data_with_backfill.rds")
+flu <- flu %>%
+  mutate(
+    year = substr(epiweek, 1, 4) %>% as.numeric(),
+    week = substr(epiweek, 5, 6) %>% as.numeric(),
+    report_year = substr(issue, 1, 4) %>% as.numeric(),
+    report_week = substr(issue, 5, 6) %>% as.numeric(),
+    epi_week_date = MMWRweek::MMWRweek2Date(
+      MMWRyear = year,
+      MMWRweek = week
+    ),
+    report_week_date = MMWRweek::MMWRweek2Date(
+      MMWRyear = report_year,
+      MMWRweek = report_week
+    )
+  )
+
+flu$season <- ifelse(
+  flu$week <= 30,
+  paste0(flu$year - 1, "/", flu$year),
+  paste0(flu$year, "/", flu$year + 1)
+)
+
+## Season week column: week number within season
+## weeks after week 30 get season_week = week - 30
+## weeks before week 30 get season_week = week + (number of weeks in previous year) - 30
+## This computation relies on the start_date function in package MMWRweek,
+## which is not exported from that package's namespace!!!
+flu$season_week <- ifelse(
+  flu$week <= 30,
+  flu$week + MMWRweek(MMWRweek:::start_date(flu$year) - 1)$MMWRweek - 30,
+  flu$week - 30
+)
+
+@
+
+
+
+<<PlotNationalRegionalNumILI, fig.width = 14, fig.height = 10.25>>=
+flu <- flu %>%
+  group_by_("region", "epi_week_date") %>%
+  mutate(
+    final_num_ili = num_ili[lag == max(lag)],
+    diff_log_curr_final_num_ili = log(num_ili) - log(final_num_ili)
+  ) %>%
+  ungroup()
+
+seasons_to_plot <- paste0(2003:2014, "/", 2004:2015)
+
+for(region_val in unique(flu$region)) {
+  p <- ggplot(data = flu %>% filter(region == region_val & season %in% seasons_to_plot)) +
+    geom_line(
+      aes(x = lag,
+        y = diff_log_curr_final_num_ili,
+        group = epi_week_date,
+        color = season_week),
+      alpha = 0.5) +
+    scale_color_gradientn(colors = rainbow(7)) +
+    facet_wrap(~ season) +
+    ylab("log(reported number of cases at lag x) -\nlog(reported number of cases at lag 51)") +
+    ggtitle(region_val) +
+    theme_bw()
+  print(p)
+}
+@
+
+
+<<BasicBackfillLM>>=
+lm_fit <- remlscore(
+  y = flu$diff_log_curr_final_num_ili,
+  X = cbind(rep(1, nrow(flu)), flu$lag, flu$lag^2),
+  Z = as.matrix(flu$lag)
+)
+
+ribbons_df <-
+  data.frame(
+    lag = 1:51
+  ) %>%
+  mutate(
+    pred_mean = cbind(rep(1, 51), lag, lag^2) %*% matrix(lm_fit$beta),
+    pred_var = (rep(1, 51) * lm_fit$se.beta[1])^2 + (lag * lm_fit$se.beta[2])^2 + (lag^2 * lm_fit$se.beta[3])^2 + exp(lag * lm_fit$gamma[1]),
+    pred_sd = sqrt(pred_var),
+    pred_95_lb = pred_mean - 2 * pred_sd,
+    pred_95_ub = pred_mean + 2 * pred_sd,
+    pred_68_lb = pred_mean - 1 * pred_sd,
+    pred_68_ub = pred_mean + 1 * pred_sd
+  )
+
+ggplot() +
+  geom_ribbon(aes(x = lag, ymin = pred_95_lb, ymax = pred_95_ub),
+    alpha = 0.2,
+    data = ribbons_df) +
+  geom_ribbon(aes(x = lag, ymin = pred_68_lb, ymax = pred_68_ub),
+    alpha = 0.2,
+    data = ribbons_df) +
+  geom_line(aes(x = lag, y = pred_mean),
+    data = ribbons_df) +
+  geom_point(aes(x = lag, y = diff_log_curr_final_num_ili),
+    alpha = 0.2,
+    data = flu) +
+  theme_bw()
+@
+
+
+<<BasicBackfillLM>>=
+bs_spline_df <- 10
+bs_basis_lag <- bs(x = flu$lag,
+  df = bs_spline_df,
+  intercept = TRUE)
+
+lm_fit <- remlscore(
+  y = flu$diff_log_curr_final_num_ili,
+  X = bs_basis_lag,
+  Z = bs_basis_lag
+)
+
+bs_basis_lag_for_plot <- bs(x = 1:51,
+  df = bs_spline_df,
+  intercept = TRUE)
+
+ribbons_df <-
+  data.frame(
+    lag = 1:51
+  ) %>%
+  mutate(
+    pred_mean = bs_basis_lag_for_plot %*% matrix(lm_fit$beta),
+    pred_var = apply(
+      bs_basis_lag_for_plot^2 %*% matrix(lm_fit$se.beta)^2 +
+        exp(bs_basis_lag_for_plot %*% matrix(lm_fit$gamma)),
+      1,
+      sum),
+    pred_sd = sqrt(pred_var),
+    pred_50_lb = pred_mean - qt(0.75, df = 3) * pred_sd,
+    pred_50_ub = pred_mean + qt(0.75, df = 3) * pred_sd,
+    pred_95_lb = pred_mean - qt(0.975, df = 3) * pred_sd,
+    pred_95_ub = pred_mean + qt(0.975, df = 3) * pred_sd,
+    pred_99_lb = pred_mean - qt(0.995, df = 3) * pred_sd,
+    pred_99_ub = pred_mean + qt(0.995, df = 3) * pred_sd
+  )
+
+ggplot() +
+  geom_ribbon(aes(x = lag, ymin = pred_99_lb, ymax = pred_99_ub),
+    alpha = 0.2,
+    data = ribbons_df) +
+  geom_ribbon(aes(x = lag, ymin = pred_95_lb, ymax = pred_95_ub),
+    alpha = 0.2,
+    data = ribbons_df) +
+  geom_ribbon(aes(x = lag, ymin = pred_50_lb, ymax = pred_50_ub),
+    alpha = 0.2,
+    data = ribbons_df) +
+  geom_line(aes(x = lag, y = pred_mean),
+    data = ribbons_df) +
+  geom_point(aes(x = lag, y = diff_log_curr_final_num_ili),
+    alpha = 0.2,
+    data = flu) +
+  theme_bw()
+@
+
+<<BasicBackfillNP>>=
+library("np")
+
+bw <- npcdensbw(xdat = flu[, "lag", drop = FALSE],
+  ydat = flu[, "diff_log_curr_final_num_ili", drop = FALSE],
+  nmulti = 2,
+  remin = FALSE,
+  bwtype = "generalized_nn",
+  bwmethod = "cv.ml")
+
+dens_grid <- expand.grid(
+  lag = 1:51,
+
+)
+@
+
+
+\end{document}

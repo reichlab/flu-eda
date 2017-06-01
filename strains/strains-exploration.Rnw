@@ -1,0 +1,248 @@
+\documentclass{article}
+
+\begin{document}
+
+\title{Flu Subtypes}
+
+<<Setup>>=
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(grid)
+
+library(MMWRweek)
+library(cdcfluview)
+
+get_legend_grob <- function(x) {
+  data <- ggplot2:::ggplot_build(x)
+
+  plot <- data$plot
+  panel <- data$panel
+  data <- data$data
+  theme <- ggplot2:::plot_theme(plot)
+  position <- theme$legend.position
+  if (length(position) == 2) {
+    position <- "manual"
+  }
+
+  legend_box <- if (position != "none") {
+    ggplot2:::build_guides(plot$scales, plot$layers, plot$mapping,
+      position, theme, plot$guides, plot$labels)
+  } else {
+    ggplot2:::zeroGrob()
+  }
+  if (ggplot2:::is.zero(legend_box)) {
+    position <- "none"
+  }
+  else {
+    legend_width <- gtable:::gtable_width(legend_box) + theme$legend.margin
+    legend_height <- gtable:::gtable_height(legend_box) + theme$legend.margin
+    just <- valid.just(theme$legend.justification)
+    xjust <- just[1]
+    yjust <- just[2]
+    if (position == "manual") {
+      xpos <- theme$legend.position[1]
+      ypos <- theme$legend.position[2]
+      legend_box <- editGrob(legend_box, vp = viewport(x = xpos,
+        y = ypos, just = c(xjust, yjust), height = legend_height,
+        width = legend_width))
+    }
+    else {
+      legend_box <- editGrob(legend_box, vp = viewport(x = xjust,
+        y = yjust, just = c(xjust, yjust)))
+    }
+  }
+  return(legend_box)
+}
+@
+
+<<LoadFluData>>=
+regionflu <- get_flu_data("hhs",
+  sub_region = 1:10,
+  data_source = "who",
+  years=1997:2017)
+usflu <- get_flu_data("national",
+  sub_region = NA,
+  data_source = "who",
+  years=1997:2017)
+
+regionflu_ilinet <- get_flu_data("hhs",
+  sub_region = 1:10,
+  data_source = "ilinet",
+  years=1997:2017)
+usflu_ilinet <- get_flu_data("national",
+  sub_region = NA,
+  data_source = "ilinet",
+  years=1997:2017)
+
+flu_ilinet <- rbind.fill(usflu_ilinet, regionflu_ilinet) %>%
+  transmute(
+    region_type = `REGION TYPE`,
+    region = REGION,
+    year = YEAR,
+    week = WEEK,
+    wILI = as.numeric(`% WEIGHTED ILI`),
+    ILI = as.numeric(`%UNWEIGHTED ILI`),
+    total_ILI = as.numeric(ILITOTAL),
+    total_patients = as.numeric(`TOTAL PATIENTS`)
+  ) %>%
+  mutate(
+    time = MMWRweek2Date(year, week)
+  )
+
+flu_ilinet$season <- ifelse(
+  flu_ilinet$week <= 30,
+  paste0(flu_ilinet$year - 1, "/", flu_ilinet$year),
+  paste0(flu_ilinet$year, "/", flu_ilinet$year + 1)
+)
+
+## Season week column: week number within season
+## weeks after week 30 get season_week = week - 30
+## weeks before week 30 get season_week = week + (number of weeks in previous year) - 30
+## This computation relies on the start_date function in package MMWRweek,
+## which is not exported from that package's namespace!!!
+flu_ilinet$season_week <- ifelse(
+  flu_ilinet$week <= 30,
+  flu_ilinet$week + MMWRweek(MMWRweek:::start_date(flu_ilinet$year) - 1)$MMWRweek - 30,
+  flu_ilinet$week - 30
+)
+
+
+flu_merged <- rbind.fill(
+  usflu[[1]] %>%
+    transmute(
+      region_type = `REGION TYPE`,
+      region = REGION,
+      year = YEAR,
+      week = WEEK,
+      total_specimens = as.numeric(`TOTAL SPECIMENS`),
+      total_A = as.numeric(`A (2009 H1N1)`) +
+        as.numeric(`A (H1)`) +
+        as.numeric(`A (H3)`) +
+        as.numeric(`A (Subtyping not Performed)`) +
+        as.numeric(`A (Unable to Subtype)`) +
+        as.numeric(H3N2v),
+      total_A_typed = as.numeric(`A (2009 H1N1)`) +
+        as.numeric(`A (H1)`) +
+        as.numeric(`A (H3)`) +
+        as.numeric(H3N2v),
+      total_A_2009H1N1 = as.numeric(`A (2009 H1N1)`),
+      total_A_H1 = as.numeric(`A (H1)`),
+      total_A_H3 = as.numeric(`A (H3)`),
+      total_A_H3N2v = as.numeric(H3N2v),
+      total_B = as.numeric(B),
+      percent_positive = as.numeric(`PERCENT POSITIVE`),
+      percent_A = total_A / total_specimens * 100,
+      percent_A_2009H1N1 = as.numeric(`A (2009 H1N1)`) / total_specimens * 100,
+      percent_A_H1 = as.numeric(`A (H1)`) / total_specimens * 100,
+      percent_A_H3 = as.numeric(`A (H3)`) / total_specimens * 100,
+      percent_A_H3N2v = as.numeric(H3N2v) / total_specimens * 100,
+      percent_B = total_B / total_specimens * 100,
+      percent_A_2009H1N1_rel_typed_A = as.numeric(`A (2009 H1N1)`) / total_A_typed * 100,
+      percent_A_H1_rel_typed_A = as.numeric(`A (H1)`) / total_A_typed * 100,
+      percent_A_H3_rel_typed_A = as.numeric(`A (H3)`) / total_A_typed * 100,
+      percent_A_H3N2v_rel_typed_A = as.numeric(H3N2v) / total_A_typed * 100
+    ),
+  regionflu[[1]] %>%
+    transmute(
+      region_type = `REGION TYPE`,
+      region = REGION,
+      year = YEAR,
+      week = WEEK,
+      total_specimens = as.numeric(`TOTAL SPECIMENS`),
+      total_A = as.numeric(`A (2009 H1N1)`) +
+        as.numeric(`A (H1)`) +
+        as.numeric(`A (H3)`) +
+        as.numeric(`A (Subtyping not Performed)`) +
+        as.numeric(`A (Unable to Subtype)`) +
+        as.numeric(H3N2v),
+      total_A_typed = as.numeric(`A (2009 H1N1)`) +
+        as.numeric(`A (H1)`) +
+        as.numeric(`A (H3)`) +
+        as.numeric(H3N2v),
+      total_A_2009H1N1 = as.numeric(`A (2009 H1N1)`),
+      total_A_H1 = as.numeric(`A (H1)`),
+      total_A_H3 = as.numeric(`A (H3)`),
+      total_A_H3N2v = as.numeric(H3N2v),
+      total_B = as.numeric(B),
+      percent_positive = as.numeric(`PERCENT POSITIVE`),
+      percent_A = total_A / total_specimens * 100,
+      percent_A_2009H1N1 = as.numeric(`A (2009 H1N1)`) / total_specimens * 100,
+      percent_A_H1 = as.numeric(`A (H1)`) / total_specimens * 100,
+      percent_A_H3 = as.numeric(`A (H3)`) / total_specimens * 100,
+      percent_A_H3N2v = as.numeric(H3N2v) / total_specimens * 100,
+      percent_B = total_B / total_specimens * 100,
+      percent_A_2009H1N1_rel_typed_A = as.numeric(`A (2009 H1N1)`) / total_A_typed * 100,
+      percent_A_H1_rel_typed_A = as.numeric(`A (H1)`) / total_A_typed * 100,
+      percent_A_H3_rel_typed_A = as.numeric(`A (H3)`) / total_A_typed * 100,
+      percent_A_H3N2v_rel_typed_A = as.numeric(H3N2v) / total_A_typed * 100
+    )
+  ) %>%
+  mutate(
+    time = MMWRweek2Date(year, week)
+  )
+
+flu_merged$season <- ifelse(
+  flu_merged$week <= 30,
+  paste0(flu_merged$year - 1, "/", flu_merged$year),
+  paste0(flu_merged$year, "/", flu_merged$year + 1)
+)
+
+## Season week column: week number within season
+## weeks after week 30 get season_week = week - 30
+## weeks before week 30 get season_week = week + (number of weeks in previous year) - 30
+## This computation relies on the start_date function in package MMWRweek,
+## which is not exported from that package's namespace!!!
+flu_merged$season_week <- ifelse(
+  flu_merged$week <= 30,
+  flu_merged$week + MMWRweek(MMWRweek:::start_date(flu_merged$year) - 1)$MMWRweek - 30,
+  flu_merged$week - 30
+)
+@
+
+<<PlotABTotal>>=
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(nrow = 2, ncol = 2, widths = unit(c(1, 0.2), "null"))))
+
+p_typed <- ggplot(usflu_merged %>%
+    gather_("type", "percent", c("percent_A", "percent_A_2009H1N1", "percent_B", "percent_positive"))) +
+  geom_line(aes(x = time, y = percent, colour = type, linetype = type)) +
+  theme_bw()
+
+type_legend <- get_legend_grob(p_typed)
+p_typed <- p_typed +
+  theme(legend.position = "none")
+
+p_ilinet <- ggplot(usflu_ilinet %>%
+    filter(paste(year, week, sep = "_") %in% paste(usflu_merged$year, usflu_merged$week, sep = "_"))
+  ) +
+  geom_line(aes(x = time, y = wILI)) +
+  theme_bw()
+
+pushViewport(viewport(layout.pos.row = 1, layout.pos.col = 2))
+grid.draw(type_legend)
+upViewport()
+
+print(p_typed, vp = viewport(layout.pos.row = 1, layout.pos.col = 1))
+print(p_ilinet, vp = viewport(layout.pos.row = 2, layout.pos.col = 1))
+@
+
+<<PlotABTotalByRegionSeason>>=
+region_val <- "X"
+season_val <- "2000/2001"
+
+p_typed <- ggplot(flu_merged %>%
+    filter(region == region_val) %>%
+    gather_("type", "percent", c("percent_A", "percent_A_2009H1N1", "percent_B", "percent_positive"))) +
+  geom_line(aes(x = season_week, y = percent, colour = type, linetype = type)) +
+  facet_wrap(~ season) +
+  theme_bw()
+
+ggplot() +
+  geom_line(aes(x = season_week, y = )) +
+  theme_bw()
+@
+
+\end{document}

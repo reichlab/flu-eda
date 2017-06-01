@@ -1,0 +1,178 @@
+\documentclass{article}
+
+\usepackage[letterpaper, landscape, margin=0.25in]{geometry}
+
+\begin{document}
+
+\title{Spatial}
+
+<<Setup>>=
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(grid)
+
+library(MMWRweek)
+library(cdcfluview)
+
+get_legend_grob <- function(x) {
+  data <- ggplot2:::ggplot_build(x)
+
+  plot <- data$plot
+  panel <- data$panel
+  data <- data$data
+  theme <- ggplot2:::plot_theme(plot)
+  position <- theme$legend.position
+  if (length(position) == 2) {
+    position <- "manual"
+  }
+
+  legend_box <- if (position != "none") {
+    ggplot2:::build_guides(plot$scales, plot$layers, plot$mapping,
+      position, theme, plot$guides, plot$labels)
+  } else {
+    ggplot2:::zeroGrob()
+  }
+  if (ggplot2:::is.zero(legend_box)) {
+    position <- "none"
+  }
+  else {
+    legend_width <- gtable:::gtable_width(legend_box) + theme$legend.margin
+    legend_height <- gtable:::gtable_height(legend_box) + theme$legend.margin
+    just <- valid.just(theme$legend.justification)
+    xjust <- just[1]
+    yjust <- just[2]
+    if (position == "manual") {
+      xpos <- theme$legend.position[1]
+      ypos <- theme$legend.position[2]
+      legend_box <- editGrob(legend_box, vp = viewport(x = xpos,
+        y = ypos, just = c(xjust, yjust), height = legend_height,
+        width = legend_width))
+    }
+    else {
+      legend_box <- editGrob(legend_box, vp = viewport(x = xjust,
+        y = yjust, just = c(xjust, yjust)))
+    }
+  }
+  return(legend_box)
+}
+@
+
+<<LoadFluData>>=
+regionflu <- get_flu_data("hhs",
+  sub_region = 1:10,
+  data_source = "ilinet",
+  years=1997:2017)
+usflu <- get_flu_data("national",
+  sub_region = NA,
+  data_source = "ilinet",
+  years=1997:2017)
+
+flu_merged <- rbind.fill(usflu, regionflu) %>%
+  transmute(
+    region_type = `REGION TYPE`,
+    region = REGION,
+    year = YEAR,
+    week = WEEK,
+    wILI = as.numeric(`% WEIGHTED ILI`),
+    ILI = as.numeric(`%UNWEIGHTED ILI`),
+    total_ILI = as.numeric(ILITOTAL),
+    total_patients = as.numeric(`TOTAL PATIENTS`)
+  ) %>%
+  mutate(
+    time = MMWRweek2Date(year, week)
+  )
+
+flu_merged$season <- ifelse(
+  flu_merged$week <= 30,
+  paste0(flu_merged$year - 1, "/", flu_merged$year),
+  paste0(flu_merged$year, "/", flu_merged$year + 1)
+)
+
+## Season week column: week number within season
+## weeks after week 30 get season_week = week - 30
+## weeks before week 30 get season_week = week + (number of weeks in previous year) - 30
+## This computation relies on the start_date function in package MMWRweek,
+## which is not exported from that package's namespace!!!
+flu_merged$season_week <- ifelse(
+  flu_merged$week <= 30,
+  flu_merged$week + MMWRweek(MMWRweek:::start_date(flu_merged$year) - 1)$MMWRweek - 30,
+  flu_merged$week - 30
+)
+@
+
+<<PlotNationalRegionalWILI>>=
+palette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", rainbow(3))
+ggplot(flu_merged) +
+  geom_line(aes(x = as.Date(time), y = as.numeric(wILI))) +#, colour = region, linetype = region)) +
+#  scale_colour_manual(breaks = c("X", paste0("Region ", 1:10)), values = palette) +
+  facet_wrap(~ region) +
+  theme_bw()
+@
+
+<<PlotNationalRegionalWILIv2>>=
+palette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", rainbow(3))
+ggplot() +
+  geom_line(aes(x = as.Date(time), y = as.numeric(wILI)),
+    data = flu_merged %>% filter(region != "X")) +
+  geom_line(aes(x = as.Date(time), y = as.numeric(wILI)),
+    colour = "red",
+    data = flu_merged %>% filter(region == "X") %>% select(-region)) +
+#  scale_colour_manual(breaks = c("X", paste0("Region ", 1:10)), values = palette) +
+  facet_wrap(~ region) +
+  theme_bw()
+@
+
+<<PlotNationalRegionalWILIv3>>=
+palette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", rainbow(3))
+for(region_val in unique(flu_merged$region)) {
+  if(region_val != "X") {
+    p <- ggplot() +
+      geom_line(aes(x = as.Date(time), y = as.numeric(wILI)),
+        data = flu_merged %>% filter(region == region_val)) +
+      geom_line(aes(x = as.Date(time), y = as.numeric(wILI)),
+        colour = "red",
+        data = flu_merged %>% filter(region == "X") %>% select(-region)) +
+    #  scale_colour_manual(breaks = c("X", paste0("Region ", 1:10)), values = palette) +
+      facet_wrap(~ region) +
+      theme_bw()
+    print(p)
+  }
+}
+@
+
+<<PlotNationalRegionaltotalILIBySeason>>=
+palette <- c("#000000", rainbow(10))
+for(season_val in unique(flu_merged$season)) {
+  p <- ggplot() +
+    geom_line(aes(x = time, y = total_ILI, colour = region),
+      data = flu_merged %>% filter(season == season_val)) +
+    scale_colour_manual(
+      breaks = c("X", paste0("Region ", 1:10)),
+      limits = c("X", paste0("Region ", 1:10)),
+      values = palette) +
+    ggtitle(season_val) +
+    theme_bw()
+  print(p)
+}
+@
+
+<<PlotNationalRegionalWILIBySeason>>=
+palette <- c("#000000", rainbow(10))
+for(season_val in unique(flu_merged$season)) {
+  p <- ggplot() +
+    geom_line(aes(x = time, y = wILI, colour = region),
+      data = flu_merged %>% filter(season == season_val)) +
+      scale_colour_manual(
+        breaks = c("X", paste0("Region ", 1:10)),
+        limits = c("X", paste0("Region ", 1:10)),
+        values = palette) +
+    ggtitle(season_val) +
+    theme_bw()
+  print(p)
+}
+@
+
+\end{document}

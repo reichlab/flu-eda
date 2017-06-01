@@ -1,0 +1,215 @@
+\documentclass{article}
+
+\usepackage[letterpaper, landscape, margin=0.25in]{geometry}
+
+\begin{document}
+
+\title{Reporting/Seasonal Effects}
+
+<<Setup>>=
+library(plyr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(grid)
+
+library(MMWRweek)
+library(cdcfluview)
+
+get_legend_grob <- function(x) {
+  data <- ggplot2:::ggplot_build(x)
+
+  plot <- data$plot
+  panel <- data$panel
+  data <- data$data
+  theme <- ggplot2:::plot_theme(plot)
+  position <- theme$legend.position
+  if (length(position) == 2) {
+    position <- "manual"
+  }
+
+  legend_box <- if (position != "none") {
+    ggplot2:::build_guides(plot$scales, plot$layers, plot$mapping,
+      position, theme, plot$guides, plot$labels)
+  } else {
+    ggplot2:::zeroGrob()
+  }
+  if (ggplot2:::is.zero(legend_box)) {
+    position <- "none"
+  }
+  else {
+    legend_width <- gtable:::gtable_width(legend_box) + theme$legend.margin
+    legend_height <- gtable:::gtable_height(legend_box) + theme$legend.margin
+    just <- valid.just(theme$legend.justification)
+    xjust <- just[1]
+    yjust <- just[2]
+    if (position == "manual") {
+      xpos <- theme$legend.position[1]
+      ypos <- theme$legend.position[2]
+      legend_box <- editGrob(legend_box, vp = viewport(x = xpos,
+        y = ypos, just = c(xjust, yjust), height = legend_height,
+        width = legend_width))
+    }
+    else {
+      legend_box <- editGrob(legend_box, vp = viewport(x = xjust,
+        y = yjust, just = c(xjust, yjust)))
+    }
+  }
+  return(legend_box)
+}
+@
+
+<<LoadFluData>>=
+regionflu <- get_flu_data("hhs",
+  sub_region = 1:10,
+  data_source = "ilinet",
+  years=1997:2017)
+usflu <- get_flu_data("national",
+  sub_region = NA,
+  data_source = "ilinet",
+  years=1997:2017)
+
+flu_merged <- rbind.fill(usflu, regionflu) %>%
+  transmute(
+    region_type = `REGION TYPE`,
+    region = REGION,
+    year = YEAR,
+    week = WEEK,
+    wILI = as.numeric(`% WEIGHTED ILI`),
+    ILI = as.numeric(`%UNWEIGHTED ILI`),
+    total_ILI = as.numeric(ILITOTAL),
+    total_patients = as.numeric(`TOTAL PATIENTS`)
+  ) %>%
+  mutate(
+    time = MMWRweek2Date(year, week)
+  )
+
+flu_merged$season <- ifelse(
+    flu_merged$week <= 30,
+    paste0(flu_merged$year - 1, "/", flu_merged$year),
+    paste0(flu_merged$year, "/", flu_merged$year + 1)
+  )
+
+  ## Season week column: week number within season
+  ## weeks after week 30 get season_week = week - 30
+  ## weeks before week 30 get season_week = week + (number of weeks in previous year) - 30
+  ## This computation relies on the start_date function in package MMWRweek,
+  ## which is not exported from that package's namespace!!!
+  flu_merged$season_week <- ifelse(
+    flu_merged$week <= 30,
+    flu_merged$week + MMWRweek(MMWRweek:::start_date(flu_merged$year) - 1)$MMWRweek - 30,
+    flu_merged$week - 30
+  )
+@
+
+
+<<PlotNationalRegionalWILI>>=
+palette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", rainbow(3))
+for(region_val in unique(flu_merged$region)) {
+  p <- ggplot() +
+    geom_line(aes(x = as.Date(time), y = as.numeric(total_ILI)),
+      colour = "red",
+      data = flu_merged %>% filter(region == region_val)) +
+    geom_line(aes(x = as.Date(time), y = as.numeric(total_patients)),
+      colour = "blue",
+      data = flu_merged %>% filter(region == region_val)) +
+    geom_line(aes(x = as.Date(time), y = 100 * as.numeric(wILI)),
+      colour = "black",
+      data = flu_merged %>% filter(region == region_val)) +
+    facet_wrap(~ region) +
+    theme_bw()
+  print(p)
+}
+@
+
+
+<<PlotNationalRegionalWILIRescaled, fig.width = 14, fig.height = 10.25>>=
+flu_merged <- flu_merged %>%
+  group_by(region, season) %>%
+  mutate(
+    season_max_total_ILI = max(total_ILI, na.rm = TRUE),
+    season_max_total_patients = max(total_patients, na.rm = TRUE),
+    season_pct_total_ILI = total_ILI / season_max_total_ILI * 100,
+    season_pct_total_patients = total_patients / season_max_total_patients * 100,
+    wILI_times_100_div_8 = wILI * 100 / 8,
+    leq_christmas_week = (month(time) == 12 & day(time) <= 25),
+    csum_leq_christmas_week = cumsum(month(time) == 12 & day(time) <= 25) + leq_christmas_week,
+    christmas_week = (csum_leq_christmas_week == max(csum_leq_christmas_week)),
+    prev_week_incl_nov_thursday = ((month(time) == 11) & (mday(time) >= 3)),
+    csum_prev_week_incl_nov_thursday = cumsum(prev_week_incl_nov_thursday) +
+      prev_week_incl_nov_thursday -
+      !prev_week_incl_nov_thursday,
+    thanksgiving_week = (csum_prev_week_incl_nov_thursday == 4)
+  ) %>%
+  select(-leq_christmas_week,
+    -csum_leq_christmas_week,
+    -prev_week_incl_nov_thursday,
+    -csum_prev_week_incl_nov_thursday)
+
+christmas_week_times <- unique(flu_merged$time[flu_merged$christmas_week])
+flu_merged$christmas_week_plus_1 <- FALSE
+flu_merged$christmas_week_plus_1[
+  flu_merged$time %in% (christmas_week_times + 7)] <- TRUE
+
+christmas_week_plus_1_inds <- which(flu_merged$christmas_week_plus_1)
+flu_merged$christmas_week_time <-
+  ymd(
+    paste(
+      year(flu_merged$time - 7),
+      "12",
+      "25",
+      sep = "-"
+    )
+  )
+
+flu_merged$days_since_christmas <- NA
+flu_merged$days_since_christmas[christmas_week_plus_1_inds] <-
+  (as.Date(flu_merged$time[christmas_week_plus_1_inds]) -
+    flu_merged$christmas_week_time[christmas_week_plus_1_inds])
+flu_merged$days_since_christmas <- as.numeric(flu_merged$days_since_christmas)
+
+flu_gathered_pcts <- flu_merged %>%
+  select(region,
+    season,
+    season_week,
+    christmas_week,
+    christmas_week_plus_1,
+    days_since_christmas,
+    thanksgiving_week,
+    season_pct_total_ILI,
+    season_pct_total_patients,
+    wILI_times_100_div_8) %>%
+  gather_("variable", "value",
+    c("season_pct_total_ILI",
+      "season_pct_total_patients",
+      "wILI_times_100_div_8"))
+
+palette <- c("#000000", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", rainbow(3))
+for(region_val in unique(flu_merged$region)) {
+  p <- ggplot() +
+    geom_vline(aes(xintercept = season_week),
+      colour = "grey",
+      data = flu_merged %>% filter(christmas_week)) +
+    geom_vline(aes(xintercept = season_week, colour = days_since_christmas),
+      data = flu_merged %>% filter(christmas_week_plus_1)) +
+    geom_vline(aes(xintercept = season_week),
+      colour = "grey",
+      data = flu_merged %>% filter(thanksgiving_week)) +
+    geom_text(aes(x = season_week, y = 0, label = as.Date(time)),
+      hjust = 0,
+      size = 3,
+      data = flu_merged %>% filter(christmas_week_plus_1)) +
+    geom_line(aes(x = season_week, y = value,
+      linetype = variable),
+      data = flu_gathered_pcts %>% filter(region == region_val)) +
+    scale_colour_gradientn(colours = rainbow(10)[4:10]) +
+    ggtitle(region_val) +
+    facet_wrap(~ season) +
+    theme_bw()
+  print(p)
+}
+@
+
+
+\end{document}
