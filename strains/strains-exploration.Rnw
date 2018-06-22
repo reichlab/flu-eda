@@ -206,7 +206,7 @@ flu_merged$season_week <- ifelse(
 grid.newpage()
 pushViewport(viewport(layout = grid.layout(nrow = 2, ncol = 2, widths = unit(c(1, 0.2), "null"))))
 
-p_typed <- ggplot(usflu_merged %>%
+p_typed <- ggplot(flu_merged %>%
     gather_("type", "percent", c("percent_A", "percent_A_2009H1N1", "percent_B", "percent_positive"))) +
   geom_line(aes(x = time, y = percent, colour = type, linetype = type)) +
   theme_bw()
@@ -215,7 +215,7 @@ type_legend <- get_legend_grob(p_typed)
 p_typed <- p_typed +
   theme(legend.position = "none")
 
-p_ilinet <- ggplot(usflu_ilinet %>%
+p_ilinet <- ggplot(flu_ilinet %>%
     filter(paste(year, week, sep = "_") %in% paste(usflu_merged$year, usflu_merged$week, sep = "_"))
   ) +
   geom_line(aes(x = time, y = wILI)) +
@@ -240,9 +240,7 @@ p_typed <- ggplot(flu_merged %>%
   facet_wrap(~ season) +
   theme_bw()
 
-ggplot() +
-  geom_line(aes(x = season_week, y = )) +
-  theme_bw()
+print(p_typed)
 @
 
 \end{document}

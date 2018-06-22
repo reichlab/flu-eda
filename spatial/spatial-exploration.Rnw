@@ -175,4 +175,83 @@ for(season_val in unique(flu_merged$season)) {
 }
 @
 
+<<fluAggregationModelWILI>>=
+flu_region_wide <- flu_merged %>%
+  select(region, year, season, time, wILI) %>%
+  spread(region, wILI)
+
+colnames(flu_region_wide) <- gsub(" ", "_", colnames(flu_region_wide))
+
+all_coef <- data.frame(
+  Region_1 = NA,
+  Region_2 = NA,
+  Region_3 = NA,
+  Region_4 = NA,
+  Region_5 = NA,
+  Region_6 = NA,
+  Region_7 = NA,
+  Region_8 = NA,
+  Region_9 = NA,
+  Region_10 = NA,
+  Rsq = NA,
+  min_resid = NA,
+  max_resid = NA
+)
+
+for(year_val in unique(flu_region_wide$year)) {
+  year_flu <- flu_region_wide %>%
+    filter(year == year_val)
+
+  fit <- lm(
+    formula(paste0("X ~ 0 + ", paste(paste0("Region_", 1:10), collapse = " + "))),
+    data = year_flu)
+
+  new_coef <- coef(fit) %>% t() %>% as.data.frame()
+  new_coef$Rsq <- summary(fit)$r.squared
+  new_coef$min_resid <- min(resid(fit))
+  new_coef$max_resid <- max(resid(fit))
+
+  all_coef <- rbind(all_coef, new_coef)
+}
+
+
+
+all_coef <- data.frame(
+  Region_1 = NA,
+  Region_2 = NA,
+  Region_3 = NA,
+  Region_4 = NA,
+  Region_5 = NA,
+  Region_6 = NA,
+  Region_7 = NA,
+  Region_8 = NA,
+  Region_9 = NA,
+  Region_10 = NA,
+  Rsq = NA,
+  min_resid = NA,
+  max_resid = NA
+)
+
+for(season_val in unique(flu_region_wide$season)) {
+  year_flu <- flu_region_wide %>%
+    filter(season == season_val)
+
+  fit <- lm(
+    formula(paste0("X ~ 0 + ", paste(paste0("Region_", 1:10), collapse = " + "))),
+    data = year_flu)
+
+  new_coef <- coef(fit) %>% t() %>% as.data.frame()
+  new_coef$Rsq <- summary(fit)$r.squared
+  new_coef$min_resid <- min(resid(fit))
+  new_coef$max_resid <- max(resid(fit))
+
+  all_coef <- rbind(all_coef, new_coef)
+}
+
+fit <- lm(
+  formula(paste0("X ~ 0 + ", paste(paste0("Region_", 1:10), collapse = " + "))),
+  data = flu_region_wide)
+
+@
+
 \end{document}
